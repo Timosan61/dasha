@@ -13,12 +13,12 @@ __pycache__/
 dist/
 build/
 
-# Data files
+# Data files (raw/processed excluded, but keep demo database)
 data/raw/
 data/processed/
 data/models/
-*.db
-*.sqlite
+# Allow demo database
+!data/dasha.db
 
 # IDE
 .idea/
@@ -26,8 +26,8 @@ data/models/
 *.swp
 *.swo
 
-# Streamlit
-.streamlit/
+# Streamlit secrets (but allow config.toml)
+.streamlit/secrets.toml
 
 # Misc
 .DS_Store

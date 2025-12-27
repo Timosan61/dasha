@@ -186,8 +186,8 @@ def analyze(skip_preprocessing: bool, skip_clustering: bool, skip_gpt: bool):
 
         # Step 2: Clustering
         if not skip_clustering:
-            console.print("\n[bold]Step 2: Clustering with BERTopic[/bold]")
-            clusterer = ClusteringService()
+            console.print("\n[bold]Step 2: Clustering with KMeans[/bold]")
+            clusterer = ClusteringService(use_kmeans=True, n_clusters=10)
 
             # Use combined_text (bio + posts + hashtags) for clustering
             docs = [p.combined_text or p.bio_clean or p.bio for p in profiles if p.bio]
