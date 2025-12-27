@@ -132,7 +132,7 @@ def show_overview(profiles_df: pd.DataFrame, clusters_df: pd.DataFrame):
         st.metric("Всего профилей", len(profiles_df))
 
     with col2:
-        bio_count = profiles_df['bio'].notna().sum()
+        bio_count = profiles_df['bio'].apply(lambda x: bool(x and str(x).strip())).sum()
         st.metric("С биографией", bio_count)
 
     with col3:
