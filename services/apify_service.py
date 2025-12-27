@@ -102,15 +102,68 @@ class CommentData:
 
 
 class ApifyService:
-    """Service for fetching Instagram data via Apify"""
+    """Service for fetching Instagram data via Apify with API key rotation"""
+
+    # Active API keys (4, 5, 6 have credits)
+    ACTIVE_KEYS = [4, 5, 6]
 
     def __init__(self):
-        self.token = os.getenv('APIFY_API_TOKEN')
-        if not self.token:
-            raise ValueError("APIFY_API_TOKEN not found in environment")
-        self.client = ApifyClient(self.token)
+        # Load all available API tokens
+        self.tokens = []
+        for key_num in self.ACTIVE_KEYS:
+            token = os.getenv(f'APIFY_API_TOKEN_{key_num}')
+            if token:
+                self.tokens.append((key_num, token))
+
+        # Fallback to default token if no numbered keys found
+        if not self.tokens:
+            default_token = os.getenv('APIFY_API_TOKEN')
+            if default_token:
+                self.tokens.append((0, default_token))
+
+        if not self.tokens:
+            raise ValueError("No APIFY_API_TOKEN found in environment")
+
+        self.current_token_idx = 0
+        self._init_client()
         self.data_dir = Path(__file__).parent.parent / 'data' / 'raw'
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        console.print(f"[dim]Loaded {len(self.tokens)} API keys: {[k[0] for k in self.tokens]}[/dim]")
+
+    def _init_client(self):
+        """Initialize Apify client with current token"""
+        key_num, token = self.tokens[self.current_token_idx]
+        self.client = ApifyClient(token)
+        self.current_key_num = key_num
+
+    def _rotate_token(self) -> bool:
+        """Rotate to next available token. Returns False if no more tokens."""
+        if self.current_token_idx + 1 < len(self.tokens):
+            self.current_token_idx += 1
+            self._init_client()
+            console.print(f"[yellow]Switched to API key #{self.current_key_num}[/yellow]")
+            return True
+        return False
+
+    def _call_actor_with_retry(self, actor_id: str, run_input: dict) -> dict:
+        """Call Apify actor with automatic key rotation on failure"""
+        while True:
+            try:
+                console.print(f"[dim]Using API key #{self.current_key_num}[/dim]")
+                run = self.client.actor(actor_id).call(run_input=run_input)
+                return run
+            except Exception as e:
+                error_msg = str(e).lower()
+                # Check if it's a quota/credits error
+                if 'usage limit' in error_msg or 'quota' in error_msg or 'credit' in error_msg:
+                    console.print(f"[red]API key #{self.current_key_num} exhausted: {e}[/red]")
+                    if self._rotate_token():
+                        continue
+                    else:
+                        raise ValueError("All API keys exhausted!")
+                else:
+                    raise
 
     def fetch_followers(self, username: str, max_count: int = 10000) -> List[FollowerData]:
         """
@@ -137,7 +190,7 @@ class ApifyService:
         ) as progress:
             task = progress.add_task("Running Apify Actor...", total=None)
 
-            run = self.client.actor(FOLLOWERS_ACTOR).call(run_input=run_input)
+            run = self._call_actor_with_retry(FOLLOWERS_ACTOR, run_input)
             progress.update(task, description="Processing results...")
 
             followers = []
@@ -193,7 +246,7 @@ class ApifyService:
                 }
 
                 try:
-                    run = self.client.actor(PROFILE_ACTOR).call(run_input=run_input)
+                    run = self._call_actor_with_retry(PROFILE_ACTOR, run_input)
 
                     for item in self.client.dataset(run["defaultDatasetId"]).iterate_items():
                         # Extract posts (limit to MAX_POSTS_PER_PROFILE)
@@ -299,7 +352,7 @@ class ApifyService:
         ) as progress:
             task = progress.add_task("Running Instagram Post Scraper...", total=None)
 
-            run = self.client.actor(POST_SCRAPER_ACTOR).call(run_input=run_input)
+            run = self._call_actor_with_retry(POST_SCRAPER_ACTOR, run_input)
             progress.update(task, description="Processing results...")
 
             reels = []
@@ -360,7 +413,7 @@ class ApifyService:
         ) as progress:
             task = progress.add_task("Running Instagram Comment Scraper...", total=None)
 
-            run = self.client.actor(COMMENTS_SCRAPER_ACTOR).call(run_input=run_input)
+            run = self._call_actor_with_retry(COMMENTS_SCRAPER_ACTOR, run_input)
             progress.update(task, description="Processing results...")
 
             comments_by_post = {}
