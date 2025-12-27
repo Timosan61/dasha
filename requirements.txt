@@ -1,0 +1,27 @@
+# Apify Client
+apify-client>=1.6.0
+
+# NLP (Russian)
+natasha>=1.6.0
+
+# Clustering (lightweight, no PyTorch)
+scikit-learn>=1.3.0
+numpy>=1.24.0
+
+# OpenAI (embeddings + analysis)
+openai>=1.0.0
+
+# Data Processing
+pandas>=2.0.0
+
+# Database
+sqlalchemy>=2.0.0
+
+# Web UI
+streamlit>=1.30.0
+plotly>=5.18.0
+
+# Utils
+python-dotenv>=1.0.0
+click>=8.0.0
+rich>=13.0.0
