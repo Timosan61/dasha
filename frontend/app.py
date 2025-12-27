@@ -63,7 +63,7 @@ def load_data():
             'posts_count': p.posts_count,
             'external_url': p.external_url,
             'cluster_id': p.cluster_id,
-            'cluster_name': p.cluster.name if p.cluster else 'Не кластеризован',
+            'cluster_name': (p.cluster.analysis.segment_name if p.cluster.analysis else p.cluster.name) if p.cluster else 'Не кластеризован',
         } for p in profiles])
 
         clusters_data = []
@@ -84,6 +84,8 @@ def load_data():
             })
 
         clusters_df = pd.DataFrame(clusters_data)
+        # Use segment_name if available, fallback to name
+        clusters_df['segment_name'] = clusters_df['segment_name'].fillna(clusters_df['name'])
 
     return profiles_df, clusters_df
 
@@ -155,7 +157,7 @@ def show_overview(profiles_df: pd.DataFrame, clusters_df: pd.DataFrame):
             fig = px.pie(
                 clusters_df,
                 values='size',
-                names='name',
+                names='segment_name',
                 hole=0.4
             )
             fig.update_traces(textposition='inside', textinfo='percent+label')
@@ -167,7 +169,7 @@ def show_overview(profiles_df: pd.DataFrame, clusters_df: pd.DataFrame):
             fig = px.bar(
                 clusters_df.sort_values('size', ascending=True),
                 x='size',
-                y='name',
+                y='segment_name',
                 orientation='h',
                 color='size',
                 color_continuous_scale='Blues'
