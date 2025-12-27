@@ -606,11 +606,27 @@ def analyze_comments():
             for idea in result.get('content_ideas', []):
                 console.print(f"  💡 {idea}")
 
-            # Save results
+            # Save to database
+            analysis = CommentAnalysis(
+                found_pains=result.get('found_pains', []),
+                found_questions=result.get('found_questions', []),
+                main_topics=result.get('main_topics', []),
+                audience_insights=result.get('audience_insights', ''),
+                content_ideas=result.get('content_ideas', []),
+                raw_response=response.choices[0].message.content,
+                comments_count=len(comments),
+                reels_count=len(reels)
+            )
+            session.add(analysis)
+            session.commit()
+            console.print(f"\n[green]Анализ сохранён в БД (id={analysis.id})[/green]")
+
+            # Also save to JSON
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
             with open(PROCESSED_DIR / f"comments_analysis_{timestamp}.json", 'w', encoding='utf-8') as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
-            console.print(f"\n[dim]Saved to {PROCESSED_DIR}/comments_analysis_{timestamp}.json[/dim]")
+            console.print(f"[dim]Saved to {PROCESSED_DIR}/comments_analysis_{timestamp}.json[/dim]")
 
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")

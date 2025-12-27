@@ -16,7 +16,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
-from database import get_session, Profile, Cluster, SegmentAnalysis
+from database import get_session, Profile, Cluster, SegmentAnalysis, Reel, Comment, CommentAnalysis
 
 # Page config
 st.set_page_config(
@@ -95,7 +95,7 @@ def main():
 
     page = st.sidebar.radio(
         "Навигация",
-        ["🏠 Обзор", "📈 Кластеры", "👥 Профили", "📥 Экспорт"]
+        ["🏠 Обзор", "📈 Кластеры", "💬 Комментарии", "👥 Профили", "📥 Экспорт"]
     )
 
     # Load data
@@ -115,6 +115,8 @@ def main():
         show_overview(profiles_df, clusters_df)
     elif page == "📈 Кластеры":
         show_clusters(profiles_df, clusters_df)
+    elif page == "💬 Комментарии":
+        show_comments()
     elif page == "👥 Профили":
         show_profiles(profiles_df, clusters_df)
     elif page == "📥 Экспорт":
@@ -249,6 +251,94 @@ def show_clusters(profiles_df: pd.DataFrame, clusters_df: pd.DataFrame):
             with st.expander(f"@{row['username']} — {row['full_name'] or 'N/A'}"):
                 st.markdown(f"**Bio:** {row['bio'] or 'Нет'}")
                 st.markdown(f"**Подписчиков:** {row['followers_count']:,}")
+
+
+def show_comments():
+    """Comments analysis page"""
+    st.title("💬 Анализ комментариев")
+
+    with get_session() as session:
+        # Load data
+        reels = session.query(Reel).all()
+        comments = session.query(Comment).all()
+        analysis = session.query(CommentAnalysis).order_by(CommentAnalysis.created_at.desc()).first()
+
+        if not comments:
+            st.warning("Нет комментариев. Запустите `python main.py comments` для сбора.")
+            return
+
+        # Metrics
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Рилсов", len(reels))
+        with col2:
+            st.metric("Комментариев", len(comments))
+        with col3:
+            questions = len([c for c in comments if '?' in (c.text or '')])
+            st.metric("С вопросами", questions)
+        with col4:
+            if analysis:
+                st.metric("Болей найдено", len(analysis.found_pains or []))
+
+        st.markdown("---")
+
+        # GPT Analysis Results
+        if analysis:
+            st.subheader("🎯 Найденные боли аудитории")
+
+            for pain in (analysis.found_pains or []):
+                freq = pain.get('frequency', 'средняя')
+                color = {'высокая': '🔴', 'средняя': '🟡', 'низкая': '⚪'}.get(freq, '⚪')
+                with st.expander(f"{color} {pain.get('pain', 'Боль')} — {freq}"):
+                    st.info(f"📝 _{pain.get('evidence', '')}_")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("❓ Вопросы аудитории")
+                for q in (analysis.found_questions or []):
+                    st.markdown(f"- {q}")
+
+            with col2:
+                st.subheader("💡 Идеи для контента")
+                for idea in (analysis.content_ideas or []):
+                    st.markdown(f"- {idea}")
+
+            st.subheader("📊 Основные темы")
+            topics = analysis.main_topics or []
+            if topics:
+                cols = st.columns(len(topics))
+                for i, topic in enumerate(topics):
+                    with cols[i]:
+                        st.info(topic)
+
+            st.subheader("💭 Инсайты об аудитории")
+            st.success(analysis.audience_insights or "Нет данных")
+
+        else:
+            st.info("GPT-анализ не выполнен. Запустите `python main.py analyze-comments`")
+
+        st.markdown("---")
+
+        # Comments table
+        st.subheader("📋 Все комментарии")
+
+        # Filter
+        search = st.text_input("🔍 Поиск по тексту", "")
+
+        comments_data = [{
+            'Текст': c.text[:100] + '...' if c.text and len(c.text) > 100 else c.text,
+            'Автор': c.owner_username,
+            'Лайков': c.likes_count,
+            'Рилс': c.reel.shortcode if c.reel else '',
+        } for c in comments]
+
+        df = pd.DataFrame(comments_data)
+
+        if search:
+            df = df[df['Текст'].str.contains(search, case=False, na=False)]
+
+        st.dataframe(df, use_container_width=True, height=400)
 
 
 def show_profiles(profiles_df: pd.DataFrame, clusters_df: pd.DataFrame):

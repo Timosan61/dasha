@@ -104,8 +104,8 @@ class CommentData:
 class ApifyService:
     """Service for fetching Instagram data via Apify with API key rotation"""
 
-    # Active API keys (4, 5, 6 have credits)
-    ACTIVE_KEYS = [4, 5, 6]
+    # Active API keys (skip #1 - exhausted)
+    ACTIVE_KEYS = [2, 3, 4, 5, 6, 7]
 
     def __init__(self):
         # Load all available API tokens
@@ -155,8 +155,8 @@ class ApifyService:
                 return run
             except Exception as e:
                 error_msg = str(e).lower()
-                # Check if it's a quota/credits error
-                if 'usage limit' in error_msg or 'quota' in error_msg or 'credit' in error_msg:
+                # Check if it's a quota/credits/limit error
+                if any(x in error_msg for x in ['usage limit', 'quota', 'credit', 'hard limit', 'exceeded']):
                     console.print(f"[red]API key #{self.current_key_num} exhausted: {e}[/red]")
                     if self._rotate_token():
                         continue
