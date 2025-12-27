@@ -109,6 +109,79 @@ class SegmentAnalysis(Base):
         return f"<SegmentAnalysis {self.segment_name}>"
 
 
+class Reel(Base):
+    """Instagram reel/post for comment analysis"""
+    __tablename__ = 'reels'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    post_id = Column(String(255), unique=True)  # Instagram post ID
+    shortcode = Column(String(50), index=True)  # e.g., "CUHYX5fqpf8"
+    url = Column(String(512))  # Full URL
+    caption = Column(Text)
+    likes_count = Column(Integer, default=0)
+    comments_count = Column(Integer, default=0)
+    views_count = Column(Integer, default=0)
+    post_type = Column(String(50))  # Video, Reel, Image
+    posted_at = Column(DateTime, nullable=True)
+    owner_username = Column(String(255))  # @dasha_samoylina
+
+    # Comments relationship
+    comments = relationship('Comment', back_populates='reel', cascade='all, delete-orphan')
+
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<Reel {self.shortcode}>"
+
+
+class Comment(Base):
+    """Comment on Instagram reel"""
+    __tablename__ = 'comments'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    reel_id = Column(Integer, ForeignKey('reels.id'), nullable=False)
+    reel = relationship('Reel', back_populates='comments')
+
+    comment_id = Column(String(255))  # Instagram comment ID
+    text = Column(Text)
+    owner_username = Column(String(255))
+    owner_full_name = Column(String(255))
+    likes_count = Column(Integer, default=0)
+    replies_count = Column(Integer, default=0)
+    is_reply = Column(Boolean, default=False)
+    parent_comment_id = Column(String(255), nullable=True)
+    posted_at = Column(DateTime, nullable=True)
+
+    # Analysis fields
+    text_clean = Column(Text)  # Preprocessed text
+    is_question = Column(Boolean, default=False)  # Detected as question
+    pain_topic = Column(String(255), nullable=True)  # Extracted pain topic
+
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<Comment by @{self.owner_username}>"
+
+
+class CommentAnalysis(Base):
+    """GPT analysis of comments - found pains and insights"""
+    __tablename__ = 'comment_analyses'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    found_pains = Column(JSON)         # [{pain, evidence, frequency}]
+    found_questions = Column(JSON)     # [str]
+    main_topics = Column(JSON)         # [str]
+    audience_insights = Column(Text)
+    content_ideas = Column(JSON)       # [str]
+    raw_response = Column(Text)
+    comments_count = Column(Integer, default=0)
+    reels_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<CommentAnalysis {self.created_at}>"
+
+
 class FetchRun(Base):
     """Track Apify fetch runs"""
     __tablename__ = 'fetch_runs'

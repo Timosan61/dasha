@@ -25,6 +25,8 @@ console = Console()
 # Constants
 FOLLOWERS_ACTOR = "datadoping/instagram-followers-scraper"
 PROFILE_ACTOR = "apify/instagram-profile-scraper"
+POST_SCRAPER_ACTOR = "apify/instagram-post-scraper"
+COMMENTS_SCRAPER_ACTOR = "apify/instagram-comment-scraper"
 BATCH_SIZE = 100  # Process profiles in batches
 MAX_POSTS_PER_PROFILE = 5  # Only analyze last 5 posts
 
@@ -72,6 +74,33 @@ class ProfileData:
             self.latest_posts = []
 
 
+@dataclass
+class ReelData:
+    post_id: str
+    shortcode: str
+    url: str
+    caption: Optional[str] = None
+    likes_count: int = 0
+    comments_count: int = 0
+    views_count: int = 0
+    post_type: str = "Video"
+    posted_at: Optional[str] = None
+    owner_username: str = ""
+
+
+@dataclass
+class CommentData:
+    comment_id: str
+    text: str
+    owner_username: str
+    owner_full_name: Optional[str] = None
+    likes_count: int = 0
+    replies_count: int = 0
+    is_reply: bool = False
+    parent_comment_id: Optional[str] = None
+    posted_at: Optional[str] = None
+
+
 class ApifyService:
     """Service for fetching Instagram data via Apify"""
 
@@ -83,7 +112,7 @@ class ApifyService:
         self.data_dir = Path(__file__).parent.parent / 'data' / 'raw'
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-    def fetch_followers(self, username: str, max_count: int = 3000) -> List[FollowerData]:
+    def fetch_followers(self, username: str, max_count: int = 10000) -> List[FollowerData]:
         """
         Fetch list of followers for a given Instagram username.
 
@@ -243,6 +272,130 @@ class ApifyService:
         profiles = self.fetch_profiles(public_usernames)
 
         return profiles
+
+    def fetch_posts(self, username: str, max_posts: int = 20, only_reels: bool = True) -> List[ReelData]:
+        """
+        Fetch posts/reels from a user's profile.
+
+        Args:
+            username: Instagram username
+            max_posts: Maximum number of posts to fetch
+            only_reels: If True, filter only Video/Reel posts
+
+        Returns:
+            List of ReelData objects
+        """
+        console.print(f"[bold blue]Fetching posts from @{username}...[/bold blue]")
+
+        run_input = {
+            "username": [username],
+            "resultsLimit": max_posts
+        }
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Running Instagram Post Scraper...", total=None)
+
+            run = self.client.actor(POST_SCRAPER_ACTOR).call(run_input=run_input)
+            progress.update(task, description="Processing results...")
+
+            reels = []
+            for item in self.client.dataset(run["defaultDatasetId"]).iterate_items():
+                post_type = item.get("type", "Image")
+
+                # Filter only reels/videos if requested
+                if only_reels and post_type not in ["Video", "Reel", "Sidecar"]:
+                    continue
+
+                shortcode = item.get("shortCode", "")
+                reels.append(ReelData(
+                    post_id=str(item.get("id", "")),
+                    shortcode=shortcode,
+                    url=item.get("url", f"https://www.instagram.com/p/{shortcode}/"),
+                    caption=item.get("caption"),
+                    likes_count=item.get("likesCount", 0),
+                    comments_count=item.get("commentsCount", 0),
+                    views_count=item.get("videoViewCount", 0) or item.get("playCount", 0),
+                    post_type=post_type,
+                    posted_at=item.get("timestamp"),
+                    owner_username=item.get("ownerUsername", username),
+                ))
+
+        console.print(f"[green]Fetched {len(reels)} reels/videos[/green]")
+
+        # Save to file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = self.data_dir / f"reels_{username}_{timestamp}.json"
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump([r.__dict__ for r in reels], f, ensure_ascii=False, indent=2)
+        console.print(f"[dim]Saved to {filepath}[/dim]")
+
+        return reels
+
+    def fetch_comments(self, post_urls: List[str], max_comments_per_post: int = 500) -> Dict[str, List[CommentData]]:
+        """
+        Fetch comments for a list of posts.
+
+        Args:
+            post_urls: List of Instagram post URLs
+            max_comments_per_post: Maximum comments to fetch per post
+
+        Returns:
+            Dict mapping post URL to list of CommentData
+        """
+        console.print(f"[bold blue]Fetching comments for {len(post_urls)} posts...[/bold blue]")
+
+        run_input = {
+            "directUrls": post_urls,
+            "resultsLimit": max_comments_per_post
+        }
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Running Instagram Comment Scraper...", total=None)
+
+            run = self.client.actor(COMMENTS_SCRAPER_ACTOR).call(run_input=run_input)
+            progress.update(task, description="Processing results...")
+
+            comments_by_post = {}
+            for item in self.client.dataset(run["defaultDatasetId"]).iterate_items():
+                post_url = item.get("postUrl", "")
+
+                if post_url not in comments_by_post:
+                    comments_by_post[post_url] = []
+
+                comments_by_post[post_url].append(CommentData(
+                    comment_id=str(item.get("id", "")),
+                    text=item.get("text", ""),
+                    owner_username=item.get("ownerUsername", ""),
+                    owner_full_name=item.get("ownerFullName"),
+                    likes_count=item.get("likesCount", 0),
+                    replies_count=item.get("repliesCount", 0),
+                    is_reply=item.get("isReply", False),
+                    parent_comment_id=item.get("parentCommentId"),
+                    posted_at=item.get("timestamp"),
+                ))
+
+        total_comments = sum(len(c) for c in comments_by_post.values())
+        console.print(f"[green]Fetched {total_comments} comments from {len(comments_by_post)} posts[/green]")
+
+        # Save to file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = self.data_dir / f"comments_{timestamp}.json"
+
+        # Serialize for JSON
+        serialized = {url: [c.__dict__ for c in comments] for url, comments in comments_by_post.items()}
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(serialized, f, ensure_ascii=False, indent=2)
+        console.print(f"[dim]Saved to {filepath}[/dim]")
+
+        return comments_by_post
 
     def load_from_file(self, filepath: str) -> List[Dict]:
         """Load previously saved data from JSON file"""

@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from database import init_db, get_session, Profile, Post, Cluster, SegmentAnalysis
+from database import init_db, get_session, Profile, Post, Cluster, SegmentAnalysis, Reel, Comment, CommentAnalysis
 from services import ApifyService, PreprocessingService, ClusteringService, AnalysisService
 
 load_dotenv()
@@ -50,9 +50,10 @@ def cli():
 
 @cli.command()
 @click.option('--target', '-t', default=None, help='Target Instagram username')
-@click.option('--max-followers', '-m', default=3000, help='Maximum followers to fetch')
+@click.option('--max-followers', '-m', default=10000, help='Maximum followers to fetch')
 @click.option('--skip-profiles', is_flag=True, help='Skip fetching profile details (bio)')
-def fetch(target: str, max_followers: int, skip_profiles: bool):
+@click.option('--skip-existing/--no-skip-existing', default=True, help='Skip profiles already in DB')
+def fetch(target: str, max_followers: int, skip_profiles: bool, skip_existing: bool):
     """Fetch Instagram followers and their profiles via Apify"""
     target = target or os.getenv('INSTAGRAM_TARGET', 'dasha_samoylina')
 
@@ -71,7 +72,23 @@ def fetch(target: str, max_followers: int, skip_profiles: bool):
 
     # Step 2: Fetch profiles with bio
     public_usernames = [f.username for f in followers if not f.is_private]
-    console.print(f"[yellow]{len(public_usernames)} public accounts to fetch[/yellow]")
+    console.print(f"[yellow]{len(public_usernames)} public accounts[/yellow]")
+
+    # Filter out existing profiles if --skip-existing is enabled
+    if skip_existing:
+        with get_session() as session:
+            existing_usernames = set(
+                u[0] for u in session.query(Profile.username).all()
+            )
+        new_usernames = [u for u in public_usernames if u not in existing_usernames]
+        console.print(f"[green]Already in DB: {len(existing_usernames)}[/green]")
+        console.print(f"[cyan]New to fetch: {len(new_usernames)}[/cyan]")
+
+        if not new_usernames:
+            console.print("[yellow]No new profiles to fetch. Use --no-skip-existing to force reload.[/yellow]")
+            return
+
+        public_usernames = new_usernames
 
     profiles = apify.fetch_profiles(public_usernames)
 
@@ -380,6 +397,223 @@ def init():
     """Initialize database"""
     init_db()
     console.print("[green]Database initialized[/green]")
+
+
+@cli.command()
+@click.option('--target', '-t', default=None, help='Target Instagram username')
+@click.option('--max-reels', '-m', default=20, help='Maximum reels to fetch')
+@click.option('--max-comments', '-c', default=500, help='Maximum comments per reel')
+def comments(target: str, max_reels: int, max_comments: int):
+    """Fetch comments from reels for pain point analysis"""
+    target = target or os.getenv('INSTAGRAM_TARGET', 'dasha_samoylina')
+
+    console.print(Panel(f"[bold]Fetching comments from @{target} reels[/bold]", style="magenta"))
+
+    init_db()
+    apify = ApifyService()
+
+    # Step 1: Fetch reels
+    console.print("\n[bold]Step 1: Fetching reels[/bold]")
+    reels = apify.fetch_posts(target, max_posts=max_reels, only_reels=True)
+
+    if not reels:
+        console.print("[red]No reels found![/red]")
+        return
+
+    console.print(f"[green]Found {len(reels)} reels[/green]")
+
+    # Save reels to DB
+    with get_session() as session:
+        for reel in reels:
+            existing = session.query(Reel).filter_by(post_id=reel.post_id).first()
+            if existing:
+                existing.likes_count = reel.likes_count
+                existing.comments_count = reel.comments_count
+                existing.views_count = reel.views_count
+            else:
+                session.add(Reel(
+                    post_id=reel.post_id,
+                    shortcode=reel.shortcode,
+                    url=reel.url,
+                    caption=reel.caption,
+                    likes_count=reel.likes_count,
+                    comments_count=reel.comments_count,
+                    views_count=reel.views_count,
+                    post_type=reel.post_type,
+                    posted_at=datetime.fromisoformat(reel.posted_at.replace('Z', '+00:00')) if reel.posted_at else None,
+                    owner_username=reel.owner_username,
+                ))
+        session.commit()
+
+    # Step 2: Fetch comments
+    console.print("\n[bold]Step 2: Fetching comments[/bold]")
+    post_urls = [reel.url for reel in reels]
+    comments_data = apify.fetch_comments(post_urls, max_comments_per_post=max_comments)
+
+    # Save comments to DB
+    saved_count = 0
+    with get_session() as session:
+        for url, url_comments in comments_data.items():
+            # Find reel by URL
+            reel = session.query(Reel).filter(Reel.url.contains(url.split('/')[-2])).first()
+            if not reel:
+                # Try by shortcode from URL
+                shortcode = url.rstrip('/').split('/')[-1]
+                reel = session.query(Reel).filter_by(shortcode=shortcode).first()
+
+            if not reel:
+                console.print(f"[yellow]Reel not found for URL: {url}[/yellow]")
+                continue
+
+            for comment in url_comments:
+                existing = session.query(Comment).filter_by(comment_id=comment.comment_id).first()
+                if not existing:
+                    session.add(Comment(
+                        reel_id=reel.id,
+                        comment_id=comment.comment_id,
+                        text=comment.text,
+                        owner_username=comment.owner_username,
+                        owner_full_name=comment.owner_full_name,
+                        likes_count=comment.likes_count,
+                        replies_count=comment.replies_count,
+                        is_reply=comment.is_reply,
+                        parent_comment_id=comment.parent_comment_id,
+                        posted_at=datetime.fromisoformat(comment.posted_at.replace('Z', '+00:00')) if comment.posted_at else None,
+                    ))
+                    saved_count += 1
+        session.commit()
+
+    console.print(f"[green]Saved {saved_count} comments to database[/green]")
+
+    # Summary
+    with get_session() as session:
+        total_reels = session.query(Reel).count()
+        total_comments = session.query(Comment).count()
+        questions = session.query(Comment).filter(Comment.text.like('%?%')).count()
+
+    console.print(Panel(f"""
+[bold green]Комментарии загружены![/bold green]
+
+Рилсов: {total_reels}
+Комментариев: {total_comments}
+С вопросами (?): {questions}
+
+Следующий шаг: python main.py analyze-comments
+    """, style="green"))
+
+
+@cli.command('analyze-comments')
+def analyze_comments():
+    """Analyze comments to extract pain points via GPT"""
+    console.print(Panel("[bold]Analyzing comments with GPT[/bold]", style="cyan"))
+
+    init_db()
+
+    with get_session() as session:
+        comments = session.query(Comment).all()
+        reels = session.query(Reel).all()
+
+        if not comments:
+            console.print("[red]No comments found. Run 'comments' first.[/red]")
+            return
+
+        console.print(f"[blue]Loaded {len(comments)} comments from {len(reels)} reels[/blue]")
+
+        # Group comments by reel
+        comments_by_reel = {}
+        for comment in comments:
+            reel = comment.reel
+            if reel.shortcode not in comments_by_reel:
+                comments_by_reel[reel.shortcode] = {
+                    'caption': reel.caption,
+                    'comments': []
+                }
+            comments_by_reel[reel.shortcode]['comments'].append(comment.text)
+
+        # Build prompt for GPT
+        from services import AnalysisService
+
+        analyzer = AnalysisService()
+
+        # Format comments for analysis
+        comments_text = ""
+        for shortcode, data in comments_by_reel.items():
+            caption_preview = (data['caption'][:100] + "...") if data['caption'] and len(data['caption']) > 100 else (data['caption'] or "без подписи")
+            comments_text += f"\n## Рилс: {caption_preview}\n"
+            comments_text += f"Комментарии ({len(data['comments'])}):\n"
+            for c in data['comments'][:30]:  # Limit to 30 per reel
+                if len(c) > 10:  # Skip very short
+                    comments_text += f"- {c[:300]}\n"
+
+        prompt = f"""Проанализируй комментарии к рилсам блогера про коммуникации.
+
+КОММЕНТАРИИ:
+{comments_text}
+
+ЗАДАЧА: Найди в комментариях реальные боли аудитории. Ищи:
+1. Вопросы, которые задают
+2. Жалобы и проблемы
+3. Ситуации, которые описывают
+4. Что их триггерит/раздражает
+
+ВАЖНО: Анализируй ТОЛЬКО реальные комментарии. Не придумывай боли.
+
+Ответ в формате JSON:
+{{
+    "found_pains": [
+        {{"pain": "описание боли", "evidence": "цитата из комментария", "frequency": "высокая/средняя/низкая"}},
+        ...
+    ],
+    "found_questions": ["вопрос 1", "вопрос 2", ...],
+    "main_topics": ["тема 1", "тема 2", ...],
+    "audience_insights": "общие наблюдения об аудитории",
+    "content_ideas": ["идея 1", "идея 2", ...]
+}}"""
+
+        try:
+            response = analyzer.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Ты эксперт по анализу аудитории. Отвечай только на русском."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=2000,
+                response_format={"type": "json_object"}
+            )
+
+            result = json.loads(response.choices[0].message.content)
+
+            # Print results
+            console.print("\n[bold cyan]═══ НАЙДЕННЫЕ БОЛИ ═══[/bold cyan]")
+            for pain in result.get('found_pains', []):
+                freq_color = {"высокая": "red", "средняя": "yellow", "низкая": "dim"}.get(pain['frequency'], "white")
+                console.print(f"\n[bold]{pain['pain']}[/bold] [{freq_color}]{pain['frequency']}[/{freq_color}]")
+                console.print(f"  → _{pain['evidence']}_")
+
+            console.print("\n[bold cyan]═══ ВОПРОСЫ АУДИТОРИИ ═══[/bold cyan]")
+            for q in result.get('found_questions', []):
+                console.print(f"  ❓ {q}")
+
+            console.print("\n[bold cyan]═══ ОСНОВНЫЕ ТЕМЫ ═══[/bold cyan]")
+            for t in result.get('main_topics', []):
+                console.print(f"  • {t}")
+
+            console.print(f"\n[bold cyan]═══ ИНСАЙТЫ ═══[/bold cyan]")
+            console.print(result.get('audience_insights', ''))
+
+            console.print(f"\n[bold cyan]═══ ИДЕИ КОНТЕНТА ═══[/bold cyan]")
+            for idea in result.get('content_ideas', []):
+                console.print(f"  💡 {idea}")
+
+            # Save results
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            with open(PROCESSED_DIR / f"comments_analysis_{timestamp}.json", 'w', encoding='utf-8') as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+            console.print(f"\n[dim]Saved to {PROCESSED_DIR}/comments_analysis_{timestamp}.json[/dim]")
+
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
 
 
 if __name__ == '__main__':
